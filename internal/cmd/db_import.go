@@ -5,8 +5,31 @@ import (
 	"path/filepath"
 	"strings"
 
+	"fmt"
+	"os"
+	"syscall"
+
 	"github.com/spf13/cobra"
 )
+
+func isFileLocked(filename string) (bool, error) {
+	f, err := os.Open(filename)
+	if err != nil {
+		return false, err
+	}
+	defer f.Close()
+
+	err = syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+	if err != nil {
+		if errors.Is(err, syscall.EWOULDBLOCK) {
+			return true, nil // File is locked
+		}
+		return false, fmt.Errorf("failed to check lock: %w", err)
+	}
+
+	syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+	return false, nil
+}
 
 func init() {
 	dbCmd.AddCommand(importCmd)
@@ -29,6 +52,15 @@ var importCmd = &cobra.Command{
 			return errors.New("filename is required: 'turso db import <filename>'")
 		}
 		filename := args[0]
+
+		locked, err := isFileLocked(filename)
+		if err != nil {
+			return fmt.Errorf("could not check file lock: %w", err)
+		}
+		if locked {
+			return errors.New("database file is locked by another process (close any open connections and try again)")
+		}
+
 		fromFileFlag = filename
 		name := sanitizeDatabaseName(filename)
 		return CreateDatabase(name)
